@@ -2,7 +2,7 @@
 #requires -RunAsAdministrator
 # ps-server-cleaner.ps1
 # Cleans PennyMac servers before and after patch night
-# Contact Elliott Berglund x8981 if you have any issues
+# Contact ExEvolution http://www.reddit.com/user/ExEvolution if you have any issues
 Clear-Host
 
 # Configuration options
