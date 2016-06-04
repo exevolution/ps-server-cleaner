@@ -2,7 +2,7 @@
 #requires -RunAsAdministrator
 # ps-server-cleaner.ps1
 # Cleans PennyMac servers before and after patch night
-# Contact ExEvolution http://www.reddit.com/user/ExEvolution if you have any issues
+# Contact Elliott Berglund x8981 if you have any issues
 Clear-Host
 
 # Configuration options
@@ -283,11 +283,16 @@ ForEach ($Server in $ServerList)
         {
             Get-ADUser -Identity $SID | Out-Null
         }
-        Catch
+        Catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException]
         {
             Write-Warning "Profile $UserLocalPath {SID: $SID} does not exist in Active Directory."
             Write-Host "Flagged `"$UserLocalPath`" for removal."
             $DeleteMethodList += $UserProfile
+            Continue
+        }
+        Catch
+        {
+            "Unhandled Exception with Active Directory module, skipping $UserLocalPath."
             Continue
         }
         Write-Host "$UserLocalPath - Status OK" -ForegroundColor Green
@@ -307,7 +312,7 @@ ForEach ($Server in $ServerList)
         }
         Catch
         {
-            Write-Host "Deletion failed!" -ForegroundColor Red
+            Write-Host "An error occurred deleting $UserLocalPath!" -ForegroundColor Red
             $FailureList += $User.LocalPath
             $FailureCount++
             Continue
