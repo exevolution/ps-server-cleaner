@@ -156,7 +156,7 @@ Function Remove-WithProgress
             }
             Catch
             {
-                Write-Host -Object $Error[0]
+                Write-Host "$($Error[0].Exception.Message)"
                 $DeleteFail = $True
                 $DeleteFailed += "$FullFileName delete failed"
             }
@@ -198,7 +198,7 @@ Function Remove-WithProgress
                 }
                 Catch
                 {
-                    Write-Host -Object $Error[0]
+                    Write-Host "$($Error[0].Exception.Message)"
                     $DeleteFail = $True
                     $DeleteFailed += "$FullFolderName folder delete failed"
                 }
@@ -243,7 +243,7 @@ Try
 }
 Catch
 {
-    Write-Host -Object $Error[0]
+    Write-Host "$($Error[0].Exception.Message)"
     "No $ServerListCSV file found in $PSScriptRoot. Exiting."
     Exit
 }
@@ -336,7 +336,7 @@ ForEach ($Server in $ServerList)
         }
         Catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException]
         {
-            Write-Host -Object $Error[0]
+            Write-Host "$($Error[0].Exception.Message)"
             Write-Warning -Message "Profile $UserLocalPath {SID: $SID} does not exist in Active Directory."
             Write-Host -Object " > Flagged `"$UserLocalPath`" for removal." -ForegroundColor Red
             $DeleteMethodList += $UserProfile
@@ -344,7 +344,7 @@ ForEach ($Server in $ServerList)
         }
         Catch
         {
-            Write-Host -Object $Error[0]
+            Write-Host "$($Error[0].Exception.Message)"
             Write-Warning -Message "Unhandled Exception with Active Directory module, skipping $UserLocalPath."
             Continue
         }
