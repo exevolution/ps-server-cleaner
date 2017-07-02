@@ -2,6 +2,7 @@
 # Cleans PennyMac servers before and after patch night
 # Contact Elliott Berglund x8981 if you have any issues
 Clear-Host
+$Host.UI.RawUI.BufferSize.Height = 2000
 
 # Make some blank lines to prevent overlap with progress bar at the beginning of the run
 "`n`n`n`n`n"
@@ -10,7 +11,20 @@ Clear-Host
 $ServerListCSV = "serverlist.csv" # Filename of CSV listing all servers to be cleaned, should be placed in the same directory as this script
 $CSVHeader = "HostName" # Header of the column in the CSV file containing the machines DNS name or IP address
 $VerbosePreference = "SilentlyContinue" # Toggle Verbosity, "SilentlyContinue" to suppress VERBOSE messages, "Continue" to use full Verbosity
-$ErrorActionPreference = "Continue" # Toggle Error Output. "SilentlyContinue" suppresses errors, "Continue" shows all errors
+
+# Non user specific cleanup targets
+[System.Collections.ArrayList]$CleanupTargets += '$RECYCLE.BIN'
+$CleanupTargets += "Windows\Temp"
+$CleanupTargets += "Temp"
+$CleanupTargets += "Windows\ProPatches\Patches"
+
+# User specifuc cleanup targets
+[System.Collections.ArrayList]$UserCleanupTargets += "AppData\Local\Temp"
+$UserCleanupTargets += "AppData\Local\Microsoft\Windows\INetCache"
+$UserCleanupTargets += "AppData\Local\Microsoft\Windows\Temporary Internet Files"
+$UserCleanupTargets += "AppData\Local\Google\Chrome\User Data\Default\Cache"
+$UserCleanupTargets += "AppData\Local\Google\Chrome\Update"
+$UserCleanupTargets += "AppData\Local\CrashDumps"
 
 # FUNCTIONS START
 Function Test-PathEx
@@ -23,8 +37,6 @@ Function Test-PathEx
     }
     Else
     {
-        #$Parent = Split-Path -LiteralPath $Path
-        #[System.IO.Directory]::EnumerateFiles($Parent) -Contains $Path
         [System.IO.Directory]::Exists($Path)
     }
 }
@@ -50,7 +62,7 @@ Function Get-FreeSpace
     {
         $FreeSpace = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $ComputerName |
         Where-Object { $_.DeviceID -eq "$DriveLetter`:" } |
-        Select-Object @{Name="ComputerName"; Expression={ $_.SystemName } }, @{Name="DriveLetter"; Expression={ $_.Caption } }, @{Name="FreeSpace"; Expression={ "$([math]::Round($_.FreeSpace / 1GB,2))GB" } }, @{Name="PercentFree"; Expression={"$([math]::Round($_.FreeSpace / $_.Size,2) * 100)%"}} | Format-List
+        Select-Object @{Name="ComputerName"; Expression={ $_.SystemName } }, @{Name="DriveLetter"; Expression={ $_.Caption } }, @{Name="FreeSpace"; Expression={ "$([math]::Round($_.FreeSpace / 1GB,2))GB" } }, @{Name="PercentFree"; Expression={"$([math]::Round($_.FreeSpace / $_.Size,2) * 100)%"}} | Format-Table -AutoSize
     }
     End
     {
@@ -113,62 +125,98 @@ Function Remove-WithProgress
 
     Begin
     {
+        # Set Variables
+        $CurrentFileCount = 0
+        $CurrentFolderCount = 0
         $DriveLetter = $DriveLetter -replace '[:|$]',''
         $CombinedPath = Join-Path -Path "\\$ComputerName" -ChildPath "$DriveLetter$" | Join-Path -ChildPath "$Path"
 
         # Start progress bar
         Write-Progress -Id 1 -Activity "Enumerating files on $ComputerName" -PercentComplete 0
+
+        # Output to screen
+        Write-Host $('=' * 60) -ForegroundColor Cyan
+        Write-Host "Path: $CombinedPath"
+        Try
+        {
+            New-Item -Path $CombinedPath -Name "writetest.tmp" -ItemType File -Force -ErrorAction Stop | Remove-Item | Out-Null
+            
+        }
+        Catch
+        {
+            Write-Host "Cannot write to $CombinedPath" -ForegroundColor Red
+            Continue
+        }
     }
 
     Process
     {
-        # Progress Bar counter
-        $CurrentFileCount = 0
-        $CurrentFolderCount = 0
-
-        # Enumerate files, silence errors
-        $Files = @(Get-ChildItem -Force -LiteralPath "$CombinedPath" -ErrorAction SilentlyContinue -Attributes !D,!D+H,!D+S,!D+H+S) | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
-        # Timer Stop
+        # Enumerate files
+        Try
+		{
+			$Files = Get-ChildItem -Force -LiteralPath "$CombinedPath" -Attributes !D,!D+H,!D+S,!D+H+S -Recurse -ErrorAction Stop | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
+		}
+		Catch
+		{
+            Write-Host "Unhandled exception enumerating $CombinedPath"
+			Write-Host $_.Exception.Message -ForegroundColor Red
+		}
 
         # Total file count for progress bar
         $FileCount = ($Files | Measure-Object).Count
-        $TotalSize = ($Files | Measure-Object -Sum -Property Length).Sum
-        $TotalSize = [math]::Round($TotalSize / 1GB,3)
+        $TotalSize = [Math]::Round(($Files | Measure-Object -Sum -Property Length).Sum /1GB,3)
 
         "Removing $FileCount files... $TotalSize`GB."
 
-        If ($DeleteFailed)
-        {
-            Remove-Variable -Name DeleteFailed
-        }
         $DeleteFailed = @()
-        $DeleteFail = $False
         ForEach ($File in $Files)
         {
+            $DeleteFail = $False
             $CurrentFileCount++
-            $FullFileName = $File.FullName
             $Percentage = [math]::Round(($CurrentFileCount / $FileCount) * 100)
-            Write-Progress -Id 1 -Activity "Removing Files" -CurrentOperation "File: $FullFileName" -PercentComplete $Percentage -Status "Progress: $CurrentFileCount of $FileCount, $Percentage%"
-            Write-Verbose -Message "Removing file $FullFileName"
+            Write-Progress -Id 1 -Activity "Removing Files" -CurrentOperation "File: $($File.FullName)" -PercentComplete $Percentage -Status "Progress: $CurrentFileCount of $FileCount, $Percentage%"
             Try
             {
-                $File | Remove-Item -Force
+                Write-Verbose -Message "Removing file $($File.FullName)"
+                $File | Remove-Item -ErrorAction Stop
+            }
+            Catch [System.IO.IOException]
+            {
+                Write-Host "$($_.Exception.Message) while deleting $($File.FullName)" -ForegroundColor Red
+                $DeleteFail = $True
+            }
+            Catch [System.UnauthorizedAccessException]
+            {
+                Write-Host "$($_.Exception.Message) while deleting $($File.FullName)" -ForegroundColor Red
+                $DeleteFail = $True
             }
             Catch
             {
-                Write-Host "$($Error[0].Exception.Message)"
-                $DeleteFail = $True
-                $DeleteFailed += "$FullFileName delete failed"
+                Write-Host "$($_.Exception.Message) while deleting $($File.FullName)" -ForegroundColor Red
+                Write-Host "Exception Type: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+            }
+            Finally
+            {
+                If ($DeleteFail -eq $True)
+                {
+                    $DeleteFailed += $($File.FullName)
+                }
             }
         }
 
         # Reset progress bar for phase 2
         Write-Progress -Id 1 -Activity "Enumerating empty directories on $ComputerName" -CurrentOperation "Path: $CombinedPath" -PercentComplete 0
 
-        # Enumerate remaining files
-        $RemainingFiles = @(Get-ChildItem -Force -LiteralPath $CombinedPath -ErrorAction SilentlyContinue -Attributes !D,!D+H,!D+S,!D+H+S).Count
         # Enumerate folders with 0 files
-        $EmptyFolders = @(Get-ChildItem -Force -LiteralPath "$CombinedPath" -Attributes D,D+H,D+S,D+S+H -ErrorAction SilentlyContinue) | Where-Object {($_.GetFiles()).Count -eq 0} | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
+        Try
+		{
+			$EmptyFolders = Get-ChildItem -Force -LiteralPath "$CombinedPath" -Attributes D,D+H,D+S,D+S+H -Recurse -ErrorAction Stop | Where-Object {($_.GetFiles()).Count -eq 0} -ErrorAction Stop | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
+		}
+		Catch
+		{
+            Write-Host "Unhandled exception enumerating $CombinedPath" -ForegroundColor Yellow
+			Write-Host $_.Exception.Message -ForegroundColor Red
+		}
     
         # How many empty folders for progress bars
         $EmptyCount = ($EmptyFolders | Measure-Object).Count
@@ -177,30 +225,45 @@ Function Remove-WithProgress
         {
             ForEach ($EmptyFolder in $EmptyFolders)
             {
+                $DeleteFail = $False
+
                 # Increment Folder Counter
                 $CurrentFolderCount++
 
-                # Full Folder Name
-                $FullFolderName = $EmptyFolder.FullName
-
-                $Percentage = [math]::Round(($CurrentFolderCount / $EmptyCount) * 100)
+                $Percentage = [Math]::Round(($CurrentFolderCount / $EmptyCount) * 100)
         
                 If ((($EmptyFolder.GetFiles()).Count + ($EmptyFolder.GetDirectories()).Count) -ne 0)
                 {
-                    Write-Verbose -Message "$FullFolderName not empty, skipping..."
+                    Write-Verbose -Message "$($EmptyFolder.FullName) not empty, skipping..."
                     Continue
                 }
-                Write-Progress -Id 1 -Activity "Removing Empty Directories" -CurrentOperation "Removing Empty Directory: $FullFolderName" -PercentComplete "$Percentage" -Status "Progress: $CurrentFolderCount of $EmptyCount, $Percentage%"
-                Write-Verbose -Message "Removing folder $FullFolderName"
+                Write-Progress -Id 1 -Activity "Removing Empty Directories" -CurrentOperation "Removing Empty Directory: $($EmptyFolder.FullName)" -PercentComplete "$Percentage" -Status "Progress: $CurrentFolderCount of $EmptyCount, $Percentage%"
                 Try
                 {
-                    $EmptyFolder | Remove-Item -Force
+                    Write-Verbose -Message "Removing folder $($EmptyFolder.FullName)"
+                    $EmptyFolder | Remove-Item -ErrorAction Stop
+                }
+                Catch [System.IO.IOException]
+                {
+                    Write-Host "$($_.Exception.Message) while deleting $($EmptyFolder.FullName)" -ForegroundColor Red
+                    $DeleteFail = $True
+                }
+                Catch [System.UnauthorizedAccessException]
+                {
+                    Write-Host "$($_.Exception.Message) while deleting $($EmptyFolder.FullName)" -ForegroundColor Red
+                    $DeleteFail = $True
                 }
                 Catch
                 {
-                    Write-Host "$($Error[0].Exception.Message)"
-                    $DeleteFail = $True
-                    $DeleteFailed += "$FullFolderName folder delete failed"
+                    Write-Host "$($_.Exception.Message) while deleting $($EmptyFolder.FullName)" -ForegroundColor Red
+                    Write-Host "Exception Type: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+                }
+                Finally
+                {
+                    If ($DeleteFail -eq $True)
+                    {
+                        $DeleteFailed += $($EmptyFolder.FullName)
+                    }
                 }
             }
         }
@@ -236,18 +299,18 @@ $LogPath = "$PSScriptRoot\logs\servercleanup"
 
 # Prepare array and import CSV
 $ServerList = @()
-Write-Host -Object "Importing $ServerListCSV"
+Write-Host "Importing $ServerListCSV"
 Try
 {
     Import-CSV -LiteralPath "$PSScriptRoot\$ServerListCSV" | ForEach-Object {$ServerList += $_."$CSVHeader" -replace "`r`n","" -replace "`t","" -replace " ","" }
 }
 Catch
 {
-    Write-Host "$($Error[0].Exception.Message)"
+    Write-Host "$($_.Exception.Message)"
     "No $ServerListCSV file found in $PSScriptRoot. Exiting."
     Exit
 }
-Write-Host -Object "Done"
+Write-Host "Done"
 
 # Progress Bar stuff
 $TotalServers = ($ServerList | Measure-Object).Count
@@ -267,7 +330,7 @@ ForEach ($Server in $ServerList)
 
     # Progress bar
     $Counter++
-    $Percentage = [math]::Round(($Counter / $TotalServers) * 100)
+    $Percentage = [Math]::Round(($Counter / $TotalServers) * 100)
 
     If ($Resolved)
     {
@@ -292,7 +355,7 @@ ForEach ($Server in $ServerList)
         Continue
     }
 
-    If ([System.IO.Directory]::Exists("\\$ServerHostName\c`$") -eq $False)
+    If ([System.IO.Directory]::Exists("\\$ServerHostName\c$") -eq $False)
     {
         Write-Warning -Message "$Server does not respond to UNC file requests. Skipping." | Tee-Object -FilePath "$LogPath\skipped-$LogDate.log" -Append
         Continue
@@ -304,10 +367,14 @@ ForEach ($Server in $ServerList)
     Get-FreeSpace -ComputerName $ServerHostName -DriveLetter $DriveLetter | Tee-Object -FilePath "$LogPath\$ServerHostName-freespace-$LogDate.log" -Append
     #Start-Sleep -Seconds 2
 
-    # Get profile list excluding service accounts and the local administrator account
-    $LocalAccounts = @(Get-WmiObject -Class Win32_UserAccount -ComputerName $ServerHostName -Filter "LocalAccount='True'")
-    $ExcludedAccounts = @("MsDtsServer100","MsDtsServer110","MsDtsServer120","ReportServer","MSSQLFDLauncher","MSSQLSERVER","SQLSERVERAGENT","Administrator","launcher-v4",".NET v2.0 Classic",".NET v4.5 Classic",".NET v2.0",".NET v4.5","Classic .NET AppPool")
-    $UserProfiles = @(Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName -Filter "Special='False'" | Where-Object {$_.LocalPath.Split("\")[-1] -notin $LocalAccounts.Caption.Split("\") -and $_.LocalPath.Split("\")[-1] -notin $ExcludedAccounts})
+    # Get profile list excluding local and service accounts, the local administrator account, and IIS App Pools
+    $Blacklist = @("Administrator",".NET v2.0 Classic",".NET v4.5 Classic",".NET v2.0",".NET v4.5","Classic .NET AppPool","DefaultAppPool")
+    $LocalAccounts = @(Get-WmiObject -Class Win32_UserAccount -ComputerName $ServerHostName -Filter "LocalAccount='True'" | Select-Object -ExpandProperty SID)
+    ForEach ($SA in @(Get-WmiObject -Class Win32_Service -ComputerName $ServerHostName | Select-Object -ExpandProperty StartName))
+    {
+        $Blacklist += $SA.Split("\")[-1]
+    }
+    $UserProfiles = @(Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName -Filter "Special='False'" | Where-Object {$_.SID -notin $LocalAccounts -and ($_.LocalPath.Split("\")[-1] -notin $Blacklist -or $_.LocalPath.Split("\")[-1] -notlike "00*" -or $_.LocalPath.Split("\")[-1] -notlike "*MSSQL*")})
 
     ForEach ($UserProfile in $UserProfiles)
     {
@@ -317,40 +384,40 @@ ForEach ($Server in $ServerList)
             Remove-Variable -Name SID
         }
         # If profile status Bit Field includes 8 (corrupt profile), flag for removal.
-        Write-Host -Object "Checking user profile: $UserLocalPath"
+        Write-Host "Checking user profile: $UserLocalPath"
 
         If ((8 -band $UserProfile.Status) -eq 8)
         {
             Write-Warning -Message "PROFILE CORRUPT!"
-            Write-Host -Object "Flagged `"$UserLocalPath`" for removal." -ForegroundColor Yellow
+            Write-Host "Flagged `"$UserLocalPath`" for removal." -ForegroundColor Yellow
             $DeleteMethodList += $UserProfile
             Continue
         }
 
         $SID = $UserProfile | Select-Object -ExpandProperty sid
 
-        #Check against AD to see if user account exists
+        # Check against AD to see if user account exists
         Try
         {
             Get-ADUser -Identity $SID | Out-Null
         }
         Catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException]
         {
-            Write-Host "$($Error[0].Exception.Message)"
+            Write-Host "$($_.Exception.Message)"
             Write-Warning -Message "Profile $UserLocalPath {SID: $SID} does not exist in Active Directory."
-            Write-Host -Object " > Flagged `"$UserLocalPath`" for removal." -ForegroundColor Red
+            Write-Host " > Flagged `"$UserLocalPath`" for removal." -ForegroundColor Red
             $DeleteMethodList += $UserProfile
             Continue
         }
         Catch
         {
-            Write-Host "$($Error[0].Exception.Message)"
+            Write-Host "$($_.Exception.Message)"
             Write-Warning -Message "Unhandled Exception with Active Directory module, skipping $UserLocalPath."
             Continue
         }
-        Write-Host -Object " > $UserLocalPath - Status OK" -ForegroundColor Green
+        Write-Host " > $UserLocalPath - Status OK" -ForegroundColor Green
     }
-    Write-Host -Object "Scanned all profiles on $ServerHostName"
+    Write-Host "Scanned all profiles on $ServerHostName"
     "{0} of {1} local profiles scheduled for deletion on {2}" -F ($DeleteMethodList | Measure-Object).Count,($UserProfiles | Measure-Object).Count,$ServerHostName
 
     $RemovalCount = 0
@@ -358,127 +425,54 @@ ForEach ($Server in $ServerList)
     ForEach ($User in $DeleteMethodList)
     {
         $UserLocalPath = $User.LocalPath.Split("\")[-1]
-        Write-Host -Object "Deleting Profile: $UserLocalPath" -ForegroundColor Yellow
+        Write-Host "Deleting Profile: $UserLocalPath" -ForegroundColor Yellow
         Try
         {
             $User.Delete()
         }
         Catch
         {
-            Write-Host -Object "An error occurred deleting $UserLocalPath!" -ForegroundColor Red
-            Write-Host -Object  $Error[0]
+            Write-Host "An error occurred deleting $UserLocalPath!" -ForegroundColor Red
+            Write-Host $_.Exception.Message -ForegroundColor Red
             $FailureList += $User.LocalPath
             $FailureCount++
             Continue
         }
-        Write-Host -Object "Success!"
+        Write-Host "Success!"
         $RemovalCount++
     }
     If ($RemovalCount -gt 0)
     {
-        Write-Host -Object "$RemovalCount unused profile(s) removed successfully." -ForegroundColor Cyan
+        Write-Host "$RemovalCount unused profile(s) removed successfully." -ForegroundColor Cyan
     }
 
     If ($FailureCount -gt 0)
     {
-        Write-Host -Object "$FailureCount profile(s) failed to delete. Check `"$LogPath\$ServerHostName-userprofiles-$LogDate.log`" for details."
+        Write-Host "$FailureCount profile(s) failed to delete. Check `"$LogPath\$ServerHostName-userprofiles-$LogDate.log`" for details."
         $FailureList | Out-File -LiteralPath "$LogPath\$ServerHostName-userprofiles-$LogDate.log"
     }
 
-    # C:\$RECYCLE.BIN
-    $RelativePath = '$RECYCLE.BIN'
-    $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-    If ([System.IO.Directory]::Exists("$PathTest"))
+    ForEach ($p in $CleanupTargets)
     {
-        Write-Host -Object "Path: $PathTest"
-        Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
+        $CleanTarget = $p
+        Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $CleanTarget
     }
 
-    # C:\Windows\Temp
-    $RelativePath = 'Windows\Temp'
-    $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-    If ([System.IO.Directory]::Exists("$PathTest"))
-    {
-        Write-Host -Object "Path: $PathTest"
-        Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-    }
-
-    # C:\Temp
-    $RelativePath = 'Temp'
-    $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-    If ([System.IO.Directory]::Exists("$PathTest"))
-    {
-        Write-Host -Object "Path: $PathTest"
-        Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-    }
-
-    # C:\Windows\ProPatches\Patches
-    $RelativePath = 'Windows\ProPatches\Patches'
-    $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-    If ([System.IO.Directory]::Exists("$PathTest"))
-    {
-        Write-Host -Object "Path: $PathTest"
-        Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-    }
-
-    $RemainingProfiles = Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName -Filter "Special='False'" | Where-Object {$_.LocalPath.Split("\")[-1] -notcontains $LocalAccounts}
-
+    $RemainingProfiles = @(Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName)
     ForEach ($UserProfile in $RemainingProfiles)
     {
-        $UserPath = $UserProfile.LocalPath
-        $UserPath = $UserPath -replace '[C|c]:\\',''
+        $BasePath = $UserProfile.LocalPath -replace '[C|c]:\\',''
 
-        # User temp files
-        $RelativePath = "$UserPath\AppData\Local\Temp"
-        $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-        If ([System.IO.Directory]::Exists("$PathTest"))
+        ForEach ($p in $UserCleanupTargets)
         {
-            Write-Host -Object "Path: $PathTest"
-            Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-        }
-        # User IE Cache (New)
-        $RelativePath = "$UserPath\AppData\Local\Microsoft\Windows\INetCache"
-        $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-        If ([System.IO.Directory]::Exists("$PathTest"))
-        {
-            Write-Host -Object "Path: $PathTest"
-            Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-        }
-        # User IE Cache (Old)
-        $RelativePath = "$UserPath\AppData\Local\Microsoft\Windows\Temporary Internet Files"
-        $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-        If ([System.IO.Directory]::Exists("$PathTest"))
-        {
-            Write-Host -Object "Path: $PathTest"
-            Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-        }
-        # User Chrome Cache
-        $RelativePath = "$UserPath\AppData\Local\Google\Chrome\User Data\Default\Cache"
-        $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-        If ([System.IO.Directory]::Exists("$PathTest"))
-        {
-            Write-Host -Object "Path: $PathTest"
-            Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-        }
-        # User Chrome Updates
-        $RelativePath = "$UserPath\AppData\Local\Google\Chrome\Update"
-        $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-        If ([System.IO.Directory]::Exists("$PathTest"))
-        {
-            Write-Host -Object "Path: $PathTest"
-            Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
-        }
-        # User Crash Dumps
-        $RelativePath = "$UserPath\AppData\Local\CrashDumps"
-        $PathTest = "\\$ServerHostName\$DriveLetter`$\$RelativePath"
-        If ([System.IO.Directory]::Exists("$PathTest"))
-        {
-            Write-Host -Object "Path: $PathTest"
-            Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $RelativePath
+            $CleanTarget = $BasePath + '\' + $p
+            Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $CleanTarget
         }
     }
     Get-FreeSpace -ComputerName $ServerHostName -DriveLetter "$DriveLetter" | Tee-Object -FilePath "$LogPath\$ServerHostName-freespace-$LogDate.log" -Append
-    Write-Host -Object "Cleanup completed on $ServerHostName"
+    Write-Host "Cleanup completed on $ServerHostName"
+    Write-Host $('=' * 60) -ForegroundColor Cyan
 }
+
 Write-Progress -Id 0 -Completed -Activity 'Done'
-Write-Host -Object "Job complete. Check $LogPath for log files"
+Write-Host "Job complete. Check $LogPath for log files"
