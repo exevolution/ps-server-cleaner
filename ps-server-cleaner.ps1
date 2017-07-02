@@ -12,19 +12,28 @@ $ServerListCSV = "serverlist.csv" # Filename of CSV listing all servers to be cl
 $CSVHeader = "HostName" # Header of the column in the CSV file containing the machines DNS name or IP address
 $VerbosePreference = "SilentlyContinue" # Toggle Verbosity, "SilentlyContinue" to suppress VERBOSE messages, "Continue" to use full Verbosity
 
-# Non user specific cleanup targets
-[System.Collections.ArrayList]$CleanupTargets += '$RECYCLE.BIN'
+# Non user specific cleanup targets, relative from c:
+$CleanupTargets = New-Object System.Collections.ArrayList
+$CleanupTargets += '$RECYCLE.BIN'
 $CleanupTargets += "Windows\Temp"
 $CleanupTargets += "Temp"
 $CleanupTargets += "Windows\ProPatches\Patches"
+$CleanupTargets += "Windows\MiniDump"
+$CleanupTargets += "Windows\LiveKernelReports"
+$CleanupTargets += "NVIDIA\DisplayDriver"
 
-# User specifuc cleanup targets
-[System.Collections.ArrayList]$UserCleanupTargets += "AppData\Local\Temp"
+# User specifuc cleanup targets, relative from user profile directory
+$UserCleanupTargets = New-Object System.Collections.ArrayList
+$UserCleanupTargets += "AppData\Local\Temp"
 $UserCleanupTargets += "AppData\Local\Microsoft\Windows\INetCache"
 $UserCleanupTargets += "AppData\Local\Microsoft\Windows\Temporary Internet Files"
 $UserCleanupTargets += "AppData\Local\Google\Chrome\User Data\Default\Cache"
 $UserCleanupTargets += "AppData\Local\Google\Chrome\Update"
+$UserCleanupTargets += "AppData\Local\Google\Chrome SxS\User Data\Default\Cache"
+$UserCleanupTargets += "AppData\Local\Google\Chrome SxS\Update"
 $UserCleanupTargets += "AppData\Local\CrashDumps"
+$UserCleanupTargets += "AppData\Local\Microsoft\Terminal Server Client\Cache"
+$UserCleanupTargets += "AppData\LocalLow\Sun\Java\Deployment\cache\6.0"
 
 # FUNCTIONS START
 Function Test-PathEx
@@ -95,13 +104,16 @@ Function Resolve-Host
         Else
         {
             $ComputerName = $ComputerName.ToUpper()
-            $IP = [System.Net.Dns]::GetHostAddresses($ComputerName).IPAddressToString[-1]
+            $IP = [System.Net.Dns]::GetHostAddresses($ComputerName).IPAddressToString
         }
     }
 
     End
     {
-        Return $ComputerName, $IP
+        Return [PSCustomObject][Ordered]@{
+        'ComputerName' = $ComputerName
+        'IPAddress' = $IP
+        }
     }
 }
 
@@ -137,6 +149,8 @@ Function Remove-WithProgress
         # Output to screen
         Write-Host $('=' * 60) -ForegroundColor Cyan
         Write-Host "Path: $CombinedPath"
+
+        # Check if path is writable
         Try
         {
             New-Item -Path $CombinedPath -Name "writetest.tmp" -ItemType File -Force -ErrorAction Stop | Remove-Item | Out-Null
@@ -288,21 +302,20 @@ If (!(Get-Module -Name ActiveDirectory))
     Import-Module -Name ActiveDirectory -ErrorAction Stop
 }
 
-# Prepare logging
-$LogDate = (Get-Date).ToString('yyyy-MM-dd')
+$LogPath = "$PSScriptRoot\logs\ps-server-cleaner"
 # Make log directory if it doesn't exist
-If ([System.IO.Directory]::Exists("$PSScriptRoot\logs\servercleanup") -eq $False)
+If (!([System.IO.Directory]::Exists($LogPath)))
 {
-    New-Item -Path "$PSScriptRoot\logs\servercleanup" -ItemType Directory
+    New-Item -Path $LogPath -ItemType Directory
 }
-$LogPath = "$PSScriptRoot\logs\servercleanup"
 
 # Prepare array and import CSV
 $ServerList = @()
 Write-Host "Importing $ServerListCSV"
 Try
 {
-    Import-CSV -LiteralPath "$PSScriptRoot\$ServerListCSV" | ForEach-Object {$ServerList += $_."$CSVHeader" -replace "`r`n","" -replace "`t","" -replace " ","" }
+    # Import CSV of hostnames then remove any characters invalid in computer names
+    Import-CSV -LiteralPath "$PSScriptRoot\$ServerListCSV" | ForEach-Object {$ServerList += $_."$CSVHeader" -replace "[`r|`n|`t|`:|`*|`\|`/|`?|`"|`<|`>|`||`,|`~|`!|`^|`@|`#|`%|`|`'|`&|`.|`_|`(|`)|`{|`}| ]",""}
 }
 Catch
 {
@@ -346,26 +359,25 @@ ForEach ($Server in $ServerList)
     }
 
     $Resolved = Resolve-Host -ComputerName $Server
-    $ServerHostName = $Resolved[0]
-    $ServerIP = $Resolved[-1]
+    $ServerHostName = $Resolved.ComputerName
+    $ServerIP = $Resolved.IPAddress
 
     If (!(Test-NetConnection -ComputerName $ServerHostName -InformationLevel Quiet))
     {
-        Write-Warning -Message "$Server did not respond, skipping" | Tee-Object -FilePath "$LogPath\skipped-$LogDate.log" -Append
+        Write-Warning -Message "$Server did not respond, skipping"
         Continue
     }
 
     If ([System.IO.Directory]::Exists("\\$ServerHostName\c$") -eq $False)
     {
-        Write-Warning -Message "$Server does not respond to UNC file requests. Skipping." | Tee-Object -FilePath "$LogPath\skipped-$LogDate.log" -Append
+        Write-Warning -Message "$Server does not respond to UNC file requests. Skipping."
         Continue
     }
 
     Write-Progress -Activity "Recovering Disk Space on Servers" -CurrentOperation "Server Name: $Server" -Id 0 -PercentComplete $Percentage -Status "$Counter of $TotalServers, $Percentage%"
 
     # Free space
-    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter $DriveLetter | Tee-Object -FilePath "$LogPath\$ServerHostName-freespace-$LogDate.log" -Append
-    #Start-Sleep -Seconds 2
+    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter $DriveLetter
 
     # Get profile list excluding local and service accounts, the local administrator account, and IIS App Pools
     $Blacklist = @("Administrator",".NET v2.0 Classic",".NET v4.5 Classic",".NET v2.0",".NET v4.5","Classic .NET AppPool","DefaultAppPool")
@@ -469,7 +481,7 @@ ForEach ($Server in $ServerList)
             Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $CleanTarget
         }
     }
-    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter "$DriveLetter" | Tee-Object -FilePath "$LogPath\$ServerHostName-freespace-$LogDate.log" -Append
+    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter "$DriveLetter"
     Write-Host "Cleanup completed on $ServerHostName"
     Write-Host $('=' * 60) -ForegroundColor Cyan
 }
