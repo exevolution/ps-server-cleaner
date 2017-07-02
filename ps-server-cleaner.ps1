@@ -7,6 +7,27 @@ $Host.UI.RawUI.BufferSize.Height = 2000
 # Make some blank lines to prevent overlap with progress bar at the beginning of the run
 "`n`n`n`n`n"
 
+$LogPath = "$PSScriptRoot\logs"
+
+# Make log directory if it doesn't exist
+If (!([System.IO.Directory]::Exists($LogPath)))
+{
+    New-Item -Path $LogPath -ItemType Directory
+}
+
+Try
+{
+    Stop-Transcript | Out-Null
+}
+Catch [System.InvalidOperationException]
+{
+    
+}
+Finally
+{
+    Start-Transcript -OutputDirectory $LogPath -Force
+}
+
 # Configuration options
 $ServerListCSV = "serverlist.csv" # Filename of CSV listing all servers to be cleaned, should be placed in the same directory as this script
 $CSVHeader = "HostName" # Header of the column in the CSV file containing the machines DNS name or IP address
@@ -69,13 +90,17 @@ Function Get-FreeSpace
     }
     Process
     {
-        $FreeSpace = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $ComputerName |
-        Where-Object { $_.DeviceID -eq "$DriveLetter`:" } |
-        Select-Object @{Name="ComputerName"; Expression={ $_.SystemName } }, @{Name="DriveLetter"; Expression={ $_.Caption } }, @{Name="FreeSpace"; Expression={ "$([math]::Round($_.FreeSpace / 1GB,2))GB" } }, @{Name="PercentFree"; Expression={"$([math]::Round($_.FreeSpace / $_.Size,2) * 100)%"}} | Format-Table -AutoSize
+        $FreeSpace = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $ComputerName | Where-Object { $_.DeviceID -eq "$DriveLetter`:" } | Select-Object SystemName, Caption, @{Name="FreeSpace"; Expression={"$([math]::Round($_.FreeSpace / 1GB,2))GB"}}, @{Name="PercentFree"; Expression={"$([math]::Round($_.FreeSpace / $_.Size,2) * 100)%"}}
+        $Out = [PSCustomObject][Ordered]@{
+        'ComputerName' = $FreeSpace.SystemName
+        'DriveLetter' = $FreeSpace.Caption
+        'FreeSpace' = $FreeSpace.FreeSpace
+        'PercentFree' = $FreeSpace.PercentFree
+        }
     }
     End
     {
-        Return $FreeSpace
+        Return $Out
     }
 }
 
@@ -147,7 +172,7 @@ Function Remove-WithProgress
         Write-Progress -Id 1 -Activity "Enumerating files on $ComputerName" -PercentComplete 0
 
         # Output to screen
-        Write-Host $('=' * 60) -ForegroundColor Cyan
+        Write-Host $("`n" + ('=' * 60) + "`n") -ForegroundColor Cyan
         Write-Host "Path: $CombinedPath"
 
         # Check if path is writable
@@ -274,10 +299,7 @@ Function Remove-WithProgress
                 }
                 Finally
                 {
-                    If ($DeleteFail -eq $True)
-                    {
-                        $DeleteFailed += $($EmptyFolder.FullName)
-                    }
+                    
                 }
             }
         }
@@ -287,10 +309,6 @@ Function Remove-WithProgress
     {
         # Close progress bar
         Write-Progress -Id 1 -Completed -Activity 'Done'
-        If ($DeleteFail -eq $True)
-        {
-            $DeleteFailed | Out-File -LiteralPath "$LogPath\$ServerHostName-skippedfiles-$LogDate.log" -Append
-        }
         Return
     }
 }
@@ -300,13 +318,6 @@ Function Remove-WithProgress
 If (!(Get-Module -Name ActiveDirectory))
 {
     Import-Module -Name ActiveDirectory -ErrorAction Stop
-}
-
-$LogPath = "$PSScriptRoot\logs\ps-server-cleaner"
-# Make log directory if it doesn't exist
-If (!([System.IO.Directory]::Exists($LogPath)))
-{
-    New-Item -Path $LogPath -ItemType Directory
 }
 
 # Prepare array and import CSV
@@ -339,7 +350,6 @@ ForEach ($Server in $ServerList)
     # Create UserProfiles, DeleteMethodList,and FailureList arrays
     $UserProfiles = @()
     $DeleteMethodList = @()
-    $FailureList = @()
 
     # Progress bar
     $Counter++
@@ -377,7 +387,9 @@ ForEach ($Server in $ServerList)
     Write-Progress -Activity "Recovering Disk Space on Servers" -CurrentOperation "Server Name: $Server" -Id 0 -PercentComplete $Percentage -Status "$Counter of $TotalServers, $Percentage%"
 
     # Free space
-    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter $DriveLetter
+    Write-Host $("`n" + ('=' * 60) + "`n") -ForegroundColor Green
+    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter $DriveLetter | Format-Table
+    Write-Host $(('=' * 60) + "`n") -ForegroundColor Green
 
     # Get profile list excluding local and service accounts, the local administrator account, and IIS App Pools
     $Blacklist = @("Administrator",".NET v2.0 Classic",".NET v4.5 Classic",".NET v2.0",".NET v4.5","Classic .NET AppPool","DefaultAppPool")
@@ -386,7 +398,7 @@ ForEach ($Server in $ServerList)
     {
         $Blacklist += $SA.Split("\")[-1]
     }
-    $UserProfiles = @(Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName -Filter "Special='False'" | Where-Object {$_.SID -notin $LocalAccounts -and ($_.LocalPath.Split("\")[-1] -notin $Blacklist -or $_.LocalPath.Split("\")[-1] -notlike "00*" -or $_.LocalPath.Split("\")[-1] -notlike "*MSSQL*")})
+    $UserProfiles = @(Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName -Filter "Special='False'" | Where-Object {$_.SID -notin $LocalAccounts -and ($_.LocalPath.Split("\")[-1] -notin $Blacklist -or $_.LocalPath.Split("\")[-1] -notlike "00*" -or $_.LocalPath.Split("\")[-1] -notlike "*MSSQL*" -or $_.LocalPath.Split("\")[-1] -notlike "*MsDts*")})
 
     ForEach ($UserProfile in $UserProfiles)
     {
@@ -446,8 +458,6 @@ ForEach ($Server in $ServerList)
         {
             Write-Host "An error occurred deleting $UserLocalPath!" -ForegroundColor Red
             Write-Host $_.Exception.Message -ForegroundColor Red
-            $FailureList += $User.LocalPath
-            $FailureCount++
             Continue
         }
         Write-Host "Success!"
@@ -460,8 +470,7 @@ ForEach ($Server in $ServerList)
 
     If ($FailureCount -gt 0)
     {
-        Write-Host "$FailureCount profile(s) failed to delete. Check `"$LogPath\$ServerHostName-userprofiles-$LogDate.log`" for details."
-        $FailureList | Out-File -LiteralPath "$LogPath\$ServerHostName-userprofiles-$LogDate.log"
+        Write-Host "$FailureCount profile(s) failed to delete."
     }
 
     ForEach ($p in $CleanupTargets)
@@ -481,9 +490,11 @@ ForEach ($Server in $ServerList)
             Remove-WithProgress -ComputerName $ServerHostName -DriveLetter $DriveLetter -Path $CleanTarget
         }
     }
-    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter "$DriveLetter"
+    Write-Host $("`n" + ('=' * 60) + "`n") -ForegroundColor Green
+    Get-FreeSpace -ComputerName $ServerHostName -DriveLetter $DriveLetter | Format-Table
+    Write-Host $(('=' * 60) + "`n") -ForegroundColor Green
     Write-Host "Cleanup completed on $ServerHostName"
-    Write-Host $('=' * 60) -ForegroundColor Cyan
+    Write-Host $("`n" + ('=' * 60) + "`n") -ForegroundColor Cyan
 }
 
 Write-Progress -Id 0 -Completed -Activity 'Done'
