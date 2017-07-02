@@ -56,6 +56,12 @@ $UserCleanupTargets += "AppData\Local\CrashDumps"
 $UserCleanupTargets += "AppData\Local\Microsoft\Terminal Server Client\Cache"
 $UserCleanupTargets += "AppData\LocalLow\Sun\Java\Deployment\cache\6.0"
 
+# Import AD Module
+If (!(Get-Module -Name ActiveDirectory))
+{
+    Import-Module -Name ActiveDirectory -ErrorAction Stop
+}
+
 # FUNCTIONS START
 Function Test-PathEx
 {
@@ -207,10 +213,8 @@ Function Remove-WithProgress
 
         "Removing $FileCount files... $TotalSize`GB."
 
-        $DeleteFailed = @()
         ForEach ($File in $Files)
         {
-            $DeleteFail = $False
             $CurrentFileCount++
             $Percentage = [math]::Round(($CurrentFileCount / $FileCount) * 100)
             Write-Progress -Id 1 -Activity "Removing Files" -CurrentOperation "File: $($File.FullName)" -PercentComplete $Percentage -Status "Progress: $CurrentFileCount of $FileCount, $Percentage%"
@@ -222,12 +226,10 @@ Function Remove-WithProgress
             Catch [System.IO.IOException]
             {
                 Write-Host "$($_.Exception.Message) while deleting $($File.FullName)" -ForegroundColor Red
-                $DeleteFail = $True
             }
             Catch [System.UnauthorizedAccessException]
             {
                 Write-Host "$($_.Exception.Message) while deleting $($File.FullName)" -ForegroundColor Red
-                $DeleteFail = $True
             }
             Catch
             {
@@ -236,10 +238,7 @@ Function Remove-WithProgress
             }
             Finally
             {
-                If ($DeleteFail -eq $True)
-                {
-                    $DeleteFailed += $($File.FullName)
-                }
+                
             }
         }
 
@@ -264,8 +263,6 @@ Function Remove-WithProgress
         {
             ForEach ($EmptyFolder in $EmptyFolders)
             {
-                $DeleteFail = $False
-
                 # Increment Folder Counter
                 $CurrentFolderCount++
 
@@ -285,12 +282,10 @@ Function Remove-WithProgress
                 Catch [System.IO.IOException]
                 {
                     Write-Host "$($_.Exception.Message) while deleting $($EmptyFolder.FullName)" -ForegroundColor Red
-                    $DeleteFail = $True
                 }
                 Catch [System.UnauthorizedAccessException]
                 {
                     Write-Host "$($_.Exception.Message) while deleting $($EmptyFolder.FullName)" -ForegroundColor Red
-                    $DeleteFail = $True
                 }
                 Catch
                 {
@@ -313,12 +308,6 @@ Function Remove-WithProgress
     }
 }
 # END FUNCTIONS
-
-# Import AD Module
-If (!(Get-Module -Name ActiveDirectory))
-{
-    Import-Module -Name ActiveDirectory -ErrorAction Stop
-}
 
 # Prepare array and import CSV
 $ServerList = @()
