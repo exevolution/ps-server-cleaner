@@ -33,7 +33,7 @@ $ServerListCSV = "serverlist.csv" # Filename of CSV listing all servers to be cl
 $CSVHeader = "HostName" # Header of the column in the CSV file containing the machines DNS name or IP address
 $VerbosePreference = "SilentlyContinue" # Toggle Verbosity, "SilentlyContinue" to suppress VERBOSE messages, "Continue" to use full Verbosity
 
-# Non user specific cleanup targets, relative from c:
+# Non user specific cleanup targets, relative from C:
 $CleanupTargets = New-Object System.Collections.ArrayList
 $CleanupTargets += '$RECYCLE.BIN'
 $CleanupTargets += "Windows\Temp"
@@ -43,7 +43,7 @@ $CleanupTargets += "Windows\MiniDump"
 $CleanupTargets += "Windows\LiveKernelReports"
 $CleanupTargets += "NVIDIA\DisplayDriver"
 
-# User specifuc cleanup targets, relative from user profile directory
+# User specifuc cleanup targets, relative from user profile directory (C:\Users\{username}\)
 $UserCleanupTargets = New-Object System.Collections.ArrayList
 $UserCleanupTargets += "AppData\Local\Temp"
 $UserCleanupTargets += "AppData\Local\Microsoft\Windows\INetCache"
@@ -199,7 +199,7 @@ Function Remove-WithProgress
         # Enumerate files
         Try
 		{
-			$Files = Get-ChildItem -Force -LiteralPath "$CombinedPath" -Attributes !D,!D+H,!D+S,!D+H+S -Recurse -ErrorAction Stop | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
+			$Files = @(Get-ChildItem -Force -LiteralPath "$CombinedPath" -Attributes !D,!D+H,!D+S,!D+H+S -Recurse -ErrorAction Stop) | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
 		}
 		Catch
 		{
@@ -248,7 +248,7 @@ Function Remove-WithProgress
         # Enumerate folders with 0 files
         Try
 		{
-			$EmptyFolders = Get-ChildItem -Force -LiteralPath "$CombinedPath" -Attributes D,D+H,D+S,D+S+H -Recurse -ErrorAction Stop | Where-Object {($_.GetFiles()).Count -eq 0} -ErrorAction Stop | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
+			$EmptyFolders = @(Get-ChildItem -Force -LiteralPath "$CombinedPath" -Attributes D,D+H,D+S,D+S+H -Recurse -ErrorAction Stop) | Where-Object {($_.GetFiles()).Count -eq 0} -ErrorAction Stop | Sort-Object -Property @{ Expression = {$_.FullName.Split('\').Count} } -Descending
 		}
 		Catch
 		{
