@@ -7,25 +7,29 @@ $Host.UI.RawUI.BufferSize.Height = 2000
 # Make some blank lines to prevent overlap with progress bar at the beginning of the run
 "`n`n`n`n`n"
 
-$LogPath = "$PSScriptRoot\logs"
+$LogPath = "$PSScriptRoot\Logs"
 
 # Make log directory if it doesn't exist
-If (!([System.IO.Directory]::Exists($LogPath)))
-{
-    New-Item -Path $LogPath -ItemType Directory
-}
-
 Try
 {
-    Stop-Transcript | Out-Null
+    If (!([System.IO.Directory]::Exists($LogPath)))
+    {
+        New-Item -ItemType Directory -Path "$PSScriptRoot" -Name "Logs" -ErrorAction Stop
+    }
+    Else
+    {
+        
+    }
 }
-Catch [System.InvalidOperationException]
+Catch
 {
-    
+    Write-Host "Unhandled exception creating $LogPath" -ForegroundColor Yellow
+    Write-Host "Exception: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Exception Type: $($_.Exception.GetType().FullName)" -ForegroundColor Red
 }
 Finally
 {
-    Start-Transcript -OutputDirectory $LogPath -Force
+    Start-Transcript -OutputDirectory $LogPath
 }
 
 # Configuration options
@@ -387,7 +391,7 @@ ForEach ($Server in $ServerList)
     {
         $Blacklist += $SA.Split("\")[-1]
     }
-    $UserProfiles = @(Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName -Filter "Special='False'" | Where-Object {$_.SID -notin $LocalAccounts -and ($_.LocalPath.Split("\")[-1] -notin $Blacklist -or $_.LocalPath.Split("\")[-1] -notlike "00*" -or $_.LocalPath.Split("\")[-1] -notlike "*MSSQL*" -or $_.LocalPath.Split("\")[-1] -notlike "*MsDts*")})
+    $UserProfiles = @(Get-WmiObject -Class Win32_UserProfile -ComputerName $ServerHostName -Filter "Special='False'" | Where-Object {($_.SID -notin $LocalAccounts) -and ($_.LocalPath.Split("\")[-1] -notin $Blacklist) -and ($_.LocalPath.Split("\")[-1] -notlike "00*") -and ($_.LocalPath.Split("\")[-1] -notlike "*MSSQL*") -and ($_.LocalPath.Split("\")[-1] -notlike "*MsDts*")})
 
     ForEach ($UserProfile in $UserProfiles)
     {
@@ -487,4 +491,5 @@ ForEach ($Server in $ServerList)
 }
 
 Write-Progress -Id 0 -Completed -Activity 'Done'
+Stop-Transcript
 Write-Host "Job complete. Check $LogPath for log files"
